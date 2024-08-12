@@ -1,6 +1,7 @@
-﻿#include<iostream>
+#include<iostream>
 #include <string>
 #include<format>
+#include<unordered_set>
 #include<httplib.h>
 #include<json.hpp>
 #include<MessageProcessor.h> 
@@ -11,6 +12,14 @@ using MyStd::MySQL::Date;
 using MyStd::MySQL::DateTime;
 using namespace std::chrono_literals;
 MyStd::MySQL::DataBase db("root", "123456", "hcbot", "utf8mb4");
+std::string At(const std::string& nick, const std::string& text)
+{
+	return "@" + nick + " " + text;
+}
+std::string Code(const std::string& s)
+{
+	return "```\n" + s + "\n```";
+}
 class User :public MyStd::MySQL::DBObject
 {
 public:
@@ -62,21 +71,210 @@ struct Question
 	Question(const std::string& question, char answer, const std::string& analytic)
 		:mQuestion(question), mAnalytic(analytic), mAnswer(answer) {}
 };
-std::string SendMsg(const std::string& nick, const std::string& text)
+//所有多人游戏的基类
+class MultiplayerGame
 {
-	return "@" + nick + " " + text;
-}
-std::string Code(const std::string& s)
+protected:
+	std::unordered_set<std::string> mPlayers;
+	const size_t mPlayerCount;
+	const std::function<void(const std::string&)> SendMsg;
+	const std::function<void()> DeleteThis;
+	virtual void OnStart() {}
+public:
+	MultiplayerGame(size_t playerCount, std::function<void(const std::string&)> sendMsgCallBack, std::function<void()> deleteThisCallBack)
+		: mPlayerCount(playerCount), SendMsg(sendMsgCallBack), DeleteThis(deleteThisCallBack) {}
+	bool Started()const
+	{
+		return mPlayers.size() == mPlayerCount;
+	}
+	void Join(const std::string& id)
+	{
+		if (!Started())
+		{
+			if (mPlayers.insert(id).second)
+			{
+				SendMsg(At(id, "加入游戏成功！"));
+				if (Started())
+				{
+					OnStart();
+				}
+			}
+			else
+				SendMsg(At(id, "你已经在游戏中，请勿重复加入！"));
+		}
+		else
+			SendMsg(At(id, "游戏已经开始，无法加入！"));
+	}
+	void Leave(const std::string& id)
+	{
+		if (!Started())
+		{
+			if (mPlayers.erase(id))
+			{
+				SendMsg(At(id, "退出游戏成功！"));
+				if (mPlayers.empty())
+				{
+					DeleteThis();
+				}
+			}
+			else
+				SendMsg(At(id, "你不在游戏中！"));
+		}
+		else
+			SendMsg(At(id, "游戏已经开始，无法退出！"));
+	}
+};
+//双人五子棋
+class Gobang final :public MultiplayerGame
 {
-	return "```\n" + s + "\n```";
-}
+private:
+	enum Chess :uint8_t { EMPTY, BLACK, WHITE };
+	Chess board[15][15];
+	Chess nextPlayer;
+	uint8_t lastX, lastY;
+	uint8_t count;//走棋步数
+	std::unordered_set<std::string>::iterator nextPlayerIter;
+	bool Win()const
+	{
+		Chess color = board[lastX][lastY];
+		uint8_t x = lastX, y = lastY;
+		uint8_t m_max, count;
+		//y轴
+		while (--y >= 0 && board[x][y] == color);
+		y++;
+		for (count = 1; (++y < 15) && (board[x][y] == color); count++);
+		m_max = count;
+		//x轴
+		x = lastX, y = lastY;
+		while (--x >= 0 && board[x][y] == color);
+		x++;
+		for (count = 1; ++x < 15 && board[x][y] == color; count++);
+		if (m_max < count)
+			m_max = count;
+		//左下到右上
+		x = lastX, y = lastY;
+		while (x - 1 >= 0 && y - 1 >= 0 && board[x - 1][y - 1] == color)
+			x--, y--;
+		for (count = 1; x + 1 < 15 && y + 1 < 15 && board[x + 1][y + 1] == color; count++)
+			x++, y++;
+		if (m_max < count)
+			m_max = count;
+		//左上到右下
+		x = lastX, y = lastY;
+		while (x - 1 >= 0 && y + 1 < 15 && board[x - 1][y + 1] == color)
+			x--, y++;
+		for (count = 1; x + 1 < 15 && y - 1 >= 0 && board[x + 1][y - 1] == color; count++)
+			x++, y--;
+		if (m_max < count)
+			m_max = count;
+		return m_max >= 5;
+	}
+	std::string GetBoardString()const
+	{
+		std::string res = "\n";
+		for (size_t i = 0; i < 15; ++i)
+		{
+			for (size_t j = 0; j < 15; ++j)
+			{
+				switch (board[i][j])
+				{
+				case BLACK:
+					res += "●";
+					break;
+				case WHITE:
+					res += "◯";
+					break;
+				default:
+					res += "十";
+					break;
+				}
+			}
+			res += '\n';
+		}
+		return res;
+	}
+protected:
+	virtual void OnStart() override
+	{
+		MultiplayerGame::OnStart();
+		SendMsg("五子棋游戏开始！");
+		nextPlayerIter = mPlayers.begin();
+		SendMsg(GetBoardString());
+		SendMsg(At(*nextPlayerIter, "请发送要下的坐标："));
+	}
+public:
+	Gobang(std::function<void(const std::string&)> sendMsgCallBack, std::function<void()> deleteThisCallBack)
+		:MultiplayerGame(2, sendMsgCallBack, deleteThisCallBack)
+	{
+		nextPlayer = BLACK;
+		lastX = lastY = 0;
+		count = 0;
+		memset(board, EMPTY, sizeof(board));
+	}
+	void Put(uint8_t x, uint8_t y, const std::string& player)
+	{
+		if (player != *nextPlayerIter)
+		{
+			SendMsg(At(player, "你不在该房间或还没轮到你！"));
+			return;
+		}
+		if (player != *nextPlayerIter)
+		{
+			SendMsg(At(player, "你不在该房间或还没轮到你！"));
+			return;
+		}
+		if (x >= 15 || y >= 15)
+		{
+			SendMsg(At(player, "坐标超出范围！"));
+			return;
+		}
+		if (board[x][y] != EMPTY)
+		{
+			SendMsg(At(player, "此处已有棋子！"));
+			return;
+		}
+		board[x][y] = nextPlayer;
+		lastX = x, lastY = y;
+		++count;
+		if (nextPlayer == BLACK)
+		{
+			nextPlayer = WHITE;
+		}
+		else
+		{
+			nextPlayer = BLACK;
+		}
+		SendMsg(GetBoardString());
+		if (Win())
+		{
+			SendMsg(At(*nextPlayerIter, "恭喜，你赢了！"));
+			++nextPlayerIter;
+			if (nextPlayerIter == mPlayers.end())
+				nextPlayerIter = mPlayers.begin();
+			SendMsg(At(*nextPlayerIter, "你输了！")); 
+			DeleteThis();
+			return;
+		}
+		if (count == 255)
+		{
+			SendMsg("棋盘已满，平局！");
+			DeleteThis();
+			return;
+		}
+		++nextPlayerIter;
+		if (nextPlayerIter == mPlayers.end())
+			nextPlayerIter = mPlayers.begin();
+		SendMsg(At(*nextPlayerIter, "请发送要下的坐标："));
+	}
+};
+
 #define CheckSenderValid \
 do\
 {\
 	User sender(msg.mTrip);\
 	if(!sender.IsValid())\
 	{\
-		ret = SendMsg(sender.mTrip, "你没有注册！");\
+		ret = At(sender.mTrip, "你没有注册！");\
 		return;\
 	}\
 }while(false)
@@ -85,7 +283,7 @@ do\
 {\
 	if (!(u).IsValid())\
 	{\
-		ret = SendMsg(msg.mTrip, "该用户没有注册！");\
+		ret = At(msg.mTrip, "该用户没有注册！");\
 		return;\
 	}\
 }while(false)
@@ -95,12 +293,12 @@ do\
 	User sender(msg.mTrip);\
 	if(!sender.IsValid())\
 	{\
-		ret = SendMsg(sender.mTrip, "你没有注册！");\
+		ret = At(sender.mTrip, "你没有注册！");\
 		return;\
 	}\
 	if ((uint8_t)sender.Select("permission") < (n))\
 	{\
-		ret = SendMsg(sender.mTrip, "你没有权限！");\
+		ret = At(sender.mTrip, "你没有权限！");\
 		return;\
 	}\
 }while(false)
@@ -133,17 +331,17 @@ int main()
 			message += i[0];
 			message += '\n';
 		}
-		ret = SendMsg(msg.mTrip, message);
+		ret = At(msg.mTrip, message);
 		});
 	processor.AddMatchProcessor("注册", [&](const std::smatch&, const Message& msg, std::string& ret) {
 		User u(msg.mTrip);
 		if (u.IsValid())
 		{
-			ret = SendMsg(msg.mTrip, "你已经注册过了！");
+			ret = At(msg.mTrip, "你已经注册过了！");
 			return;
 		}
 		u.Insert();
-		ret = SendMsg(msg.mTrip, "注册成功！");
+		ret = At(msg.mTrip, "注册成功！");
 		});
 	processor.AddMatchProcessor("签到", [&](const std::smatch&, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -154,29 +352,29 @@ int main()
 			int money = rand() % 6 + 5;
 			u.Update("lastsignindate", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
 			u.Update("money", (long long)u.Select("money") + money);
-			ret = SendMsg(msg.mTrip, std::format("签到成功！奖励{}金币！", money));
+			ret = At(msg.mTrip, std::format("签到成功！奖励{}金币！", money));
 			if ((uint8_t)u.Select("type") == User::SOCIALISM)
 			{
-				ret = SendMsg(msg.mTrip, "技能【红色宣传】发动！奖励20幸福度！");
+				ret = At(msg.mTrip, "技能【红色宣传】发动！奖励20幸福度！");
 				u.Update("happiness", std::min((int)u.Select("happiness") + 20, 255));
 			}
 		}
 		else
-			ret = SendMsg(msg.mTrip, "你今天已经签过到了！");
+			ret = At(msg.mTrip, "你今天已经签过到了！");
 		});
 	processor.AddMatchProcessor(R"(设置权限\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderPermission(255);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("permission", m.str(2));
-		ret = SendMsg(msg.mTrip, "已经把该用户的权限设为" + m.str(2) + "！");
+		ret = At(msg.mTrip, "已经把该用户的权限设为" + m.str(2) + "！");
 		});
 	processor.AddMatchProcessor(R"(设置金币\s*(.+?)\s*(\-?\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("money", m.str(2));
-		ret = SendMsg(msg.mTrip, "已经把该用户的金币设为" + m.str(2) + "！");
+		ret = At(msg.mTrip, "已经把该用户的金币设为" + m.str(2) + "！");
 		});
 	processor.AddMatchProcessor(R"(转账\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -188,10 +386,10 @@ int main()
 			CheckUserValid(u2);
 			u.Update("money", (long long)u.Select("money") - money);
 			u2.Update("money", (long long)u2.Select("money") + money);
-			ret = SendMsg(msg.mTrip, "转账成功！\n\n") + SendMsg(u2.mTrip, std::format("{}给你转了{}金币！快去感谢他吧！", u.mTrip, money));
+			ret = At(msg.mTrip, "转账成功！\n\n") + At(u2.mTrip, std::format("{}给你转了{}金币！快去感谢他吧！", u.mTrip, money));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "您的金币不足！");
+			ret = At(msg.mTrip, "您的金币不足！");
 		});
 	processor.AddMatchProcessor(R"(梭哈\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -202,21 +400,21 @@ int main()
 			if (rand() % 2)
 			{
 				u.Update("money", (long long)u.Select("money") + money);
-				ret = SendMsg(msg.mTrip, "梭哈成功！你获得了" + m.str(1) + "金币！");
+				ret = At(msg.mTrip, "梭哈成功！你获得了" + m.str(1) + "金币！");
 			}
 			else
 			{
 				u.Update("money", (long long)u.Select("money") - money);
-				ret = SendMsg(msg.mTrip, "梭哈失败！你损失了" + m.str(1) + "金币！");
+				ret = At(msg.mTrip, "梭哈失败！你损失了" + m.str(1) + "金币！");
 			}
 		}
 		else
-			ret = SendMsg(msg.mTrip, "您的金币不足！");
+			ret = At(msg.mTrip, "您的金币不足！");
 		});
 	processor.AddMatchProcessor("查询", [&](const std::smatch&, const Message& msg, std::string& ret) {
 		CheckSenderValid;
 		User u(msg.mTrip);
-		ret = SendMsg(msg.mTrip,
+		ret = At(msg.mTrip,
 			std::format("您的账户信息如下：\n识别码：{}\n金币：{}\n权限：{}\n工人：{}\n军队：{}\n"
 				"生产科技：{}\n军事科技：{}\n工人工资：{}\n幸福度：{}\n政府类型：{}",
 				u.mTrip, (long long)u.Select("money"), (uint8_t)u.Select("permission"), (unsigned long)u.Select("worker"), (unsigned long)u.Select("army"), (unsigned short)u.Select("productiontechnology"),
@@ -226,7 +424,7 @@ int main()
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
-		ret = SendMsg(msg.mTrip,
+		ret = At(msg.mTrip,
 			std::format("该用户的信息如下：\n识别码：{}\n金币：{}\n权限：{}\n工人：{}\n军队：{}\n"
 				"生产科技：{}\n军事科技：{}\n工人工资：{}\n幸福度：{}\n政府类型：{}",
 				u.mTrip, (long long)u.Select("money"), (uint8_t)u.Select("permission"), (unsigned long)u.Select("worker"), (unsigned long)u.Select("army"), (unsigned short)u.Select("productiontechnology"),
@@ -253,16 +451,16 @@ int main()
 					}
 					message += '\n';
 				}
-				ret = SendMsg(msg.mTrip, message);
+				ret = At(msg.mTrip, message);
 			}
 			else
 			{
-				ret = SendMsg(msg.mTrip, "执行成功！");
+				ret = At(msg.mTrip, "执行成功！");
 			}
 		}
 		catch (const MyStd::MySQL::MySQLExecuteException& ex)
 		{
-			SendMsg(msg.mTrip, std::string("执行失败，错误信息：") + ex.what());
+			ret = At(msg.mTrip, std::string("执行失败，错误信息：") + ex.what());
 		}
 		});
 	processor.AddMatchProcessor(R"(招募工人\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
@@ -278,14 +476,14 @@ int main()
 		unsigned short recruitableWorker = u.Select("recruitableworker");
 		if (worker > recruitableWorker)
 		{
-			ret = SendMsg(msg.mTrip, std::format("招募失败！您今日剩余最多可招募{}工人！", recruitableWorker));
+			ret = At(msg.mTrip, std::format("招募失败！您今日剩余最多可招募{}工人！", recruitableWorker));
 			return;
 		}
 		long long cost;
 		if ((uint8_t)u.Select("type") == User::CAPITALISM)
 		{
 			cost = worker * 3 / 2 + worker % 2;
-			//ret = SendMsg(msg.mTrip, "技能【资本积累】发动！招募成本降低为1.5！");
+			//ret = At(msg.mTrip, "技能【资本积累】发动！招募成本降低为1.5！");
 		}
 		else
 		{
@@ -296,10 +494,10 @@ int main()
 			u.Update("money", money - cost);
 			u.Update("worker", (unsigned long)u.Select("worker") + worker);
 			u.Update("recruitableworker", recruitableWorker - worker);
-			ret = SendMsg(msg.mTrip, std::format("招募工人成功！花费{}金币！", cost));
+			ret = At(msg.mTrip, std::format("招募工人成功！花费{}金币！", cost));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "金币不足！");
+			ret = At(msg.mTrip, "金币不足！");
 		});
 	processor.AddMatchProcessor("研究生产科技", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -308,23 +506,23 @@ int main()
 		unsigned int level = (unsigned short)u.Select("productiontechnology");
 		if (level >= 500)
 		{
-			ret = SendMsg(msg.mTrip, "您的生产科技已经满级！");
+			ret = At(msg.mTrip, "您的生产科技已经满级！");
 			return;
 		}
 		long long cost = std::pow(2ll, (level - 100) / 10 + 3);
 		if ((uint8_t)u.Select("type") == User::CAPITALISM)
 		{
 			cost = cost * 6 / 10;
-			//ret = SendMsg(msg.mTrip, "技能【科技发达】发动！研究成本降低40%！");
+			//ret = At(msg.mTrip, "技能【科技发达】发动！研究成本降低40%！");
 		}
 		if (money >= cost)
 		{
 			u.Update("money", money - cost);
 			u.Update("ProductionTechnology", level + 1);
-			ret = SendMsg(msg.mTrip, std::format("研究成功！花费{}金币！", cost));
+			ret = At(msg.mTrip, std::format("研究成功！花费{}金币！", cost));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "金币不足！");
+			ret = At(msg.mTrip, "金币不足！");
 		});
 	processor.AddMatchProcessor("生产", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -332,7 +530,7 @@ int main()
 		const auto cd = ((User::Type)(uint8_t)u.Select("type") == User::CAPITALISM ? 10min : 15min);
 		if (std::chrono::system_clock::now() - (DateTime)u.Select("lastproducetime") <= cd)
 		{
-			ret = SendMsg(msg.mTrip, "生产正在冷却中！");
+			ret = At(msg.mTrip, "生产正在冷却中！");
 			return;
 		}
 		unsigned long long worker = (unsigned long)u.Select("worker");
@@ -344,7 +542,7 @@ int main()
 			int happinessres = (salary - normalSalary) * 10 / normalSalary;
 			if (happinessres > 5)
 				happinessres = 5;
-			ret = SendMsg(msg.mTrip, std::format(
+			ret = At(msg.mTrip, std::format(
 				"\n生产\n工人数量：{}\n生产科技：{}\n工人工资：{}\n实际收入：{}*({}-{})/100={}\n"
 				"标准工资：{}\n幸福度增加：{}\n{}分钟后可进行下一次生产！",
 				worker, technology, salary, worker, technology, salary, res, normalSalary,
@@ -354,7 +552,7 @@ int main()
 			u.Update("lastproducetime", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "你没有工人！");
+			ret = At(msg.mTrip, "你没有工人！");
 		});
 	processor.AddMatchProcessor(R"(设置工资\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -367,11 +565,11 @@ int main()
 			int happinessres = (newSalary - normalSalary) * 10 / normalSalary;
 			if (happinessres > 5)
 				happinessres = 5;
-			ret = SendMsg(msg.mTrip, std::format("设置成功！\n当前工资：{}\n当前标准工资：{}\n"
+			ret = At(msg.mTrip, std::format("设置成功！\n当前工资：{}\n当前标准工资：{}\n"
 				"每次生产幸福度增加：{}", newSalary, normalSalary, happinessres));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "工资不能高于生产科技！");
+			ret = At(msg.mTrip, "工资不能高于生产科技！");
 		});
 	processor.AddMatchProcessor(R"(招募军队\s*(\d+))",[&](const std::smatch& m, const Message& msg, std::string& ret){
 		CheckSenderValid;
@@ -382,7 +580,7 @@ int main()
 		if ((uint8_t)u.Select("type") == User::SOCIALISM)
 		{
 			cost = army * 3 / 2 + army % 2;
-			//ret = SendMsg(msg.mTrip, "技能【踊跃参军】发动！招募成本降低为1.5！");
+			//ret = At(msg.mTrip, "技能【踊跃参军】发动！招募成本降低为1.5！");
 		}
 		else
 		{
@@ -392,10 +590,10 @@ int main()
 		{
 			u.Update("money", money - cost);
 			u.Update("army", (unsigned long)u.Select("army") + army);
-			ret = SendMsg(msg.mTrip, std::format("招募军队成功！花费{}金币！", cost));
+			ret = At(msg.mTrip, std::format("招募军队成功！花费{}金币！", cost));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "金币不足！");
+			ret = At(msg.mTrip, "金币不足！");
 		});
 	processor.AddMatchProcessor("研究军事科技", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -404,23 +602,23 @@ int main()
 		unsigned int level = (unsigned short)u.Select("militarytechnology");
 		if (level >= 500)
 		{
-			ret = SendMsg(msg.mTrip, "您的军事科技已经满级！");
+			ret = At(msg.mTrip, "您的军事科技已经满级！");
 			return;
 		}
 		long long cost = std::pow(2ll, (level - 100) / 10 + 3);
 		if ((uint8_t)u.Select("type") == User::CAPITALISM)
 		{
 			cost = cost * 6 / 10;
-			//ret = SendMsg(msg.mTrip, "技能【科技发达】发动！研究成本降低40%！");
+			//ret = At(msg.mTrip, "技能【科技发达】发动！研究成本降低40%！");
 		}
 		if (money >= cost)
 		{
 			u.Update("money", money - cost);
 			u.Update("militarytechnology", level + 1);
-			ret = SendMsg(msg.mTrip, std::format("研究成功！花费{}金币！", cost));
+			ret = At(msg.mTrip, std::format("研究成功！花费{}金币！", cost));
 		}
 		else
-			ret = SendMsg(msg.mTrip, "金币不足！");
+			ret = At(msg.mTrip, "金币不足！");
 		});
 	processor.AddMatchProcessor(R"(攻击\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
@@ -428,36 +626,36 @@ int main()
 		User defender(m.str(1));
 		if (attacker.mTrip == defender.mTrip)
 		{
-			ret = SendMsg(msg.mTrip, "不能攻击自己！");
+			ret = At(msg.mTrip, "不能攻击自己！");
 			return;
 		}
 		CheckUserValid(defender);
 		if (std::chrono::system_clock::now() - (DateTime)defender.Select("lastlosttime") <= 6h)
 		{
-			ret = SendMsg(msg.mTrip, "对方在失败保护期中，不能进攻！");
+			ret = At(msg.mTrip, "对方在失败保护期中，不能进攻！");
 			return;
 		}
 		if (std::chrono::system_clock::now() - (DateTime)attacker.Select("lastattacktime") <= 90min)
 		{
-			ret = SendMsg(msg.mTrip, "攻击还在冷却中！");
+			ret = At(msg.mTrip, "攻击还在冷却中！");
 			return;
 		}
 		unsigned long army1 = attacker.Select("army");
 		unsigned long attackArmy = stoull(m.str(2));
 		if (attackArmy == 0)
 		{
-			ret = SendMsg(msg.mTrip, "军队数不能为0！");
+			ret = At(msg.mTrip, "军队数不能为0！");
 			return;
 		}
 		if (army1 < attackArmy)
 		{
-			ret = SendMsg(msg.mTrip, "军队不足！");
+			ret = At(msg.mTrip, "军队不足！");
 			return;
 		}
 
 		//正式开始攻击
 		attacker.Update("lastattacktime", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
-		SendMsg(defender.mTrip, attacker.mTrip + "攻击了你！");
+		At(defender.mTrip, attacker.mTrip + "攻击了你！");
 		User::Type type1 = (User::Type)(uint8_t)attacker.Select("type");
 		User::Type type2 = (User::Type)(uint8_t)defender.Select("type");
 		//进攻方信息
@@ -467,7 +665,7 @@ int main()
 		long double skill1 = 1;
 		if (type1 == User::SOCIALISM && type2 != User::SOCIALISM)
 		{
-			ret += SendMsg(attacker.mTrip, "技能【解放世界】发动！获得50%战斗力加成！\n");
+			ret += At(attacker.mTrip, "技能【解放世界】发动！获得50%战斗力加成！\n");
 			skill1 *= 1.5;
 		}
 		long double point1 = skill1 * attackArmy * technology1 * happiness1 * luck1;
@@ -479,7 +677,7 @@ int main()
 		long double skill2 = 1;
 		if (type2 == User::SOCIALISM)
 		{
-			ret += SendMsg(defender.mTrip, "技能【保家卫国】发动！获得80%战斗力加成！\n");
+			ret += At(defender.mTrip, "技能【保家卫国】发动！获得80%战斗力加成！\n");
 			skill2 *= 1.8;
 		}
 		long double point2 = skill2 * defendArmy * technology2 * happiness2 * luck2 * 1.1;
@@ -506,20 +704,20 @@ int main()
 			{
 				if (type2 != User::SOCIALISM)
 				{
-					ret += SendMsg(attacker.mTrip, "技能【万民归附】发动！获得工人数翻倍！\n");
+					ret += At(attacker.mTrip, "技能【万民归附】发动！获得工人数翻倍！\n");
 					pworker *= 2;
-					ret += SendMsg(attacker.mTrip, "技能【解放世界】发动！幸福度+2！\n");
+					ret += At(attacker.mTrip, "技能【解放世界】发动！幸福度+2！\n");
 					attacker.Update("happiness", std::min(happiness1 + 2, 255));
 					res1 += "幸福度：+2\n";
 				}
 				if (type2 == User::CAPITALISM)
 				{
-					ret += SendMsg(attacker.mTrip, "技能【赤化运动】发动！防御者政府类型变为默认！\n");
+					ret += At(attacker.mTrip, "技能【赤化运动】发动！防御者政府类型变为默认！\n");
 					defender.Update("type", User::NORMAL);
 				}
 				else if (type2 == User::NORMAL && (unsigned short)defender.Select("productiontechnology") >= 130)
 				{
-					ret += SendMsg(attacker.mTrip, "技能【赤化运动】发动！防御者政府类型变为社会主义！\n");
+					ret += At(attacker.mTrip, "技能【赤化运动】发动！防御者政府类型变为社会主义！\n");
 					defender.Update("type", User::SOCIALISM);
 				}
 			}
@@ -530,7 +728,7 @@ int main()
 			}
 			if (type1 == User::CAPITALISM)
 			{
-				ret += SendMsg(attacker.mTrip, "技能【资本输出】发动！获得金币是默认的2倍，工人是默认的1.5倍！\n");
+				ret += At(attacker.mTrip, "技能【资本输出】发动！获得金币是默认的2倍，工人是默认的1.5倍！\n");
 				pmoney *= 2;
 				pworker = pworker * 3 / 2;
 			}
@@ -542,7 +740,7 @@ int main()
 			res2 += std::format("工人：-{}", pworker);
 			if (type2 == User::SOCIALISM)
 			{
-				ret += SendMsg(defender.mTrip, "技能【宁死不屈】发动！攻击者工人不会增加！\n");
+				ret += At(defender.mTrip, "技能【宁死不屈】发动！攻击者工人不会增加！\n");
 			}
 			else
 			{
@@ -562,7 +760,7 @@ int main()
 			res2 += std::format("军队：-{}+{}\n", damage2, parmy);
 			if (type1 == User::SOCIALISM)
 			{
-				ret += SendMsg(attacker.mTrip, "技能【解放世界】发动！幸福度不会下降！\n");
+				ret += At(attacker.mTrip, "技能【解放世界】发动！幸福度不会下降！\n");
 			}
 			else
 			{
@@ -587,12 +785,12 @@ int main()
 		{
 			if (User::GetTypeString((User::Type)(uint8_t)u.Select("type")) == m.str(1))
 			{
-				ret = SendMsg(msg.mTrip, "修改失败！您现在已经是该政府类型！");
+				ret = At(msg.mTrip, "修改失败！您现在已经是该政府类型！");
 				return;
 			}
 			if (m.str(1) == "默认")
 			{
-				ret = SendMsg(msg.mTrip, "修改成功！您现在的政府类型：默认\n技能：无");
+				ret = At(msg.mTrip, "修改成功！您现在的政府类型：默认\n技能：无");
 				u.Update("lastchangedate", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
 				u.Update("type", User::NORMAL);
 				u.Update("recruitableworker", 200);//重置可招募工人
@@ -601,7 +799,7 @@ int main()
 			{
 				if ((unsigned short)u.Select("productiontechnology") >= 150)
 				{
-					ret = SendMsg(msg.mTrip, "修改成功！您现在的政府类型：资本主义\n技能：\n"
+					ret = At(msg.mTrip, "修改成功！您现在的政府类型：资本主义\n技能：\n"
 						"【资本积累】工人招募成本下降为1.5，每日可招募工人上限上升到300\n"
 						"【996】生产冷却缩短为10min，工人标准工资下降为生产科技的1/6\n"
 						"【资本输出】攻击成功时，掠夺的金币是默认的2倍，工人是默认的1.5倍\n"
@@ -611,13 +809,13 @@ int main()
 					u.Update("recruitableworker", 400);//重置可招募工人
 				}
 				else
-					ret = SendMsg(msg.mTrip, "生产科技不满足要求！");
+					ret = At(msg.mTrip, "生产科技不满足要求！");
 			}
 			else if (m.str(1) == "社会主义")
 			{
 				if ((unsigned short)u.Select("productiontechnology") >= 200)
 				{
-					ret = SendMsg(msg.mTrip, "修改成功！您现在的政府类型：社会主义\n技能：\n"
+					ret = At(msg.mTrip, "修改成功！您现在的政府类型：社会主义\n技能：\n"
 						"【红色宣传】每日签到时赠送20幸福度\n"
 						"【禁止剥削】工人标准工资上升为生产科技的50%\n"
 						"【踊跃参军】军队招募成本下降为1.5\n"
@@ -631,26 +829,26 @@ int main()
 					u.Update("recruitableworker", 200);//重置可招募工人
 				}
 				else
-					ret = SendMsg(msg.mTrip, "生产科技不满足要求！");
+					ret = At(msg.mTrip, "生产科技不满足要求！");
 			}
 			else
-				ret = SendMsg(msg.mTrip, "没有这种政府类型！");
+				ret = At(msg.mTrip, "没有这种政府类型！");
 		}
 		else
-			ret = SendMsg(msg.mTrip, "一天只能修改一次政府类型！");
+			ret = At(msg.mTrip, "一天只能修改一次政府类型！");
 		});
 	processor.AddMatchProcessor("随机句子", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		httplib::SSLClient cli("api.vvhan.com");
-		if (auto res = cli.Get("/api/ian"))
+		if (auto res = cli.Get("/api/ian/rand"))
 		{
 			if (res->status == 200)
-				ret = SendMsg(msg.mTrip, res->body);
+				ret = At(msg.mTrip, res->body);
 			else
-				ret = SendMsg(msg.mTrip, std::format("获取随机句子失败！错误码：{}", res->status));
+				ret = At(msg.mTrip, std::format("获取随机句子失败！错误码：{}", res->status));
 		}
 		else
 		{
-			ret = SendMsg(msg.mTrip, "获取随机句子失败！HTTP错误: " + httplib::to_string(res.error()));
+			ret = At(msg.mTrip, "获取随机句子失败！HTTP错误: " + httplib::to_string(res.error()));
 		}
 		});
 	processor.AddMatchProcessor("答题", [&](const std::smatch& m, const Message& msg, std::string& ret) {
@@ -661,18 +859,18 @@ int main()
 			auto res = cli.Get("/baiketiku/index?key=65a0dd35b088ad62e411385f298bfb9d");
 			if (!res)
 			{
-				ret = SendMsg(msg.mTrip, "获取题目失败！HTTP错误: " + httplib::to_string(res.error()));
+				ret = At(msg.mTrip, "获取题目失败！HTTP错误: " + httplib::to_string(res.error()));
 				return;
 			}
 			if (res->status != 200)
 			{
-				ret = SendMsg(msg.mTrip, std::format("获取题目失败！错误码：{}", res->status));
+				ret = At(msg.mTrip, std::format("获取题目失败！错误码：{}", res->status));
 				return;
 			}
 			nlohmann::json j = nlohmann::json::parse(res->body);
 			if (j["code"] != 200)
 			{
-				ret = SendMsg(msg.mTrip, "获取题目失败！错误信息：" + j["msg"].get_ref<const std::string&>());
+				ret = At(msg.mTrip, "获取题目失败！错误信息：" + j["msg"].get_ref<const std::string&>());
 				return;
 			}
 			const nlohmann::json& ques = j["result"];
@@ -687,44 +885,164 @@ int main()
 				ques["analytic"].get_ref<const std::string&>()
 			);
 		}
-		ret = SendMsg(msg.mTrip, q->mQuestion);
+		ret = At(msg.mTrip, q->mQuestion);
 		});
 	processor.AddMatchProcessor(R"(选[a-dA-D])", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		if (auto q = data.GetData<Question>(msg.mTrip + "_question"))
 		{
 			if (toupper(m.str(0).back()) == q->mAnswer)
 			{
-				ret = SendMsg(msg.mTrip, "恭喜，回答正确！");
+				ret = At(msg.mTrip, "恭喜，回答正确！");
 			}
 			else
 			{
-				ret = SendMsg(msg.mTrip, "很遗憾，回答错误！");
+				ret = At(msg.mTrip, "很遗憾，回答错误！");
 			}
-			ret = SendMsg(msg.mTrip, std::format("正确答案：{}\n解析：{}", q->mAnswer, q->mAnalytic));
+			ret += At(msg.mTrip, std::format("正确答案：{}\n解析：{}", q->mAnswer, q->mAnalytic));
 			data.RemoveData(q);
 		}
 		else
-			ret = SendMsg(msg.mTrip, "你还没有开始答题！");
+			ret = At(msg.mTrip, "你还没有开始答题！");
 		});
-
+	processor.AddMatchProcessor("历史上的今天", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		auto res = db.Execute("select * from httpcache where name='history' limit 1")->GetRows().front();
+		if (std::chrono::system_clock::now() == (Date)res[2])
+		{
+			ret = At(msg.mTrip, res[1]);
+		}
+		else
+		{
+			httplib::SSLClient cli("query.asilu.com");
+			if (auto res = cli.Get("/today/list/"))
+			{
+				if (res->status == 200)
+				{
+					nlohmann::json j = nlohmann::json::parse(res->body);
+					std::string message = "历史上的今天\n"
+						+ j["month"].get_ref<const std::string&>() + "月"
+						+ j["day"].get_ref<const std::string&>() + "日";
+					for (const nlohmann::json& js : j["data"])
+					{
+						message += "\n\n";
+						message += js["title"];
+						message += '\n';
+						message += js["link"];
+					}
+					ret = At(msg.mTrip, message);
+					db.Execute(std::format("update httpcache set data='{}',updatedate='{:%F}' where name='history' limit 1",
+						db.EscapeString(message).data(), std::chrono::system_clock::now()));
+				}
+				else
+					ret = At(msg.mTrip, std::format("获取历史上的今天失败！错误码：{}", res->status));
+			}
+			else
+			{
+				ret = At(msg.mTrip, "获取历史上的今天失败！HTTP错误: " + httplib::to_string(res.error()));
+			}
+		}
+		});
+	processor.AddMatchProcessor(R"(天气\s*(.+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		httplib::Client cl("v0.yiketianqi.com");
+		if (auto res = cl.Get("/api?unescape=1&version=v92&appid=43656176&appsecret=I42og6Lm&city=" + m.str(1)))
+		{
+			if (res->status == 200)
+			{
+				nlohmann::json j = nlohmann::json::parse(res->body);
+				if (auto iter = j.find("errmsg"); iter != j.end())
+				{
+					ret = At(msg.mTrip, "获取天气失败！错误信息：" + iter->get_ref<const std::string&>());
+				}
+				else
+				{
+					const nlohmann::json& now = j["data"][0];
+					ret = At(msg.mTrip, std::format(
+						"城市：{}({})\n更新时间：{}\n天气：{}\n"
+						"当前温度：{}℃\n今日温度：{}℃-{}℃\n湿度：{}\n"
+						"能见度：{}\n气压：{}hPa\n""风向：{}/{}\n风速：{}\n"
+						"风力：{}\n空气质量指数：{}\n空气质量等级：{}\n"
+						"日出日落：{}/{}",
+						j["city"].get_ref<const std::string&>(),
+						j["cityEn"].get_ref<const std::string&>(),
+						j["update_time"].get_ref<const std::string&>(),
+						now["wea"].get_ref<const std::string&>(),
+						now["tem"].get_ref<const std::string&>(),
+						now["tem1"].get_ref<const std::string&>(),
+						now["tem2"].get_ref<const std::string&>(),
+						now["humidity"].get_ref<const std::string&>(),
+						now["visibility"].get_ref<const std::string&>(),
+						now["pressure"].get_ref<const std::string&>(),
+						now["win"][0].get_ref<const std::string&>(),
+						now["win"][1].get_ref<const std::string&>(),
+						now["win_meter"].get_ref<const std::string&>(),
+						now["win_speed"].get_ref<const std::string&>(),
+						now["air"].get_ref<const std::string&>(),
+						now["air_level"].get_ref<const std::string&>(),
+						now["sunrise"].get_ref<const std::string&>(),
+						now["sunset"].get_ref<const std::string&>()
+					));
+				}
+			}
+			else
+				ret = At(msg.mTrip, std::format("获取天气失败！错误码：{}", res->status));
+		}
+		else
+		{
+			ret = At(msg.mTrip, "获取天气失败！HTTP错误: " + httplib::to_string(res.error()));
+		}
+		});
+	processor.AddMatchProcessor(R"(加入五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
+		{
+			g->Join(msg.mTrip);
+		}
+		else
+			ret = At(msg.mTrip, "该房间不存在！");
+		});
+	processor.AddMatchProcessor(R"(离开五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
+		{
+			g->Leave(msg.mTrip);
+		}
+		else
+			ret = At(msg.mTrip, "该房间不存在！");
+		});
+	processor.AddMatchProcessor(R"(创建五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		const std::string id = m.str(1) + "_game";
+		if (data.GetData<MultiplayerGame>(id) == nullptr)
+		{
+			data.AddData<Gobang>(m.str(1) + "_game",
+				[&](const std::string& msg) {
+					*(*data.GetData<std::string*>("current_ret_string")) += msg + '\n';
+				},
+				[&, id]() {
+					data.RemoveData(id);
+				})->Join(msg.mTrip);
+			ret += At(msg.mTrip, "创建成功，你已经自动加入该房间！");
+		}
+		else
+			ret = At(msg.mTrip, "该房间已存在！");
+		});
+	processor.AddMatchProcessor(R"(下\s*(\d+)\s*(\d+)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
+		{
+			g->Put(stoul(m.str(2)), stoul(m.str(3)), msg.mTrip);
+		}
+		else
+			ret = At(msg.mTrip, "该房间不存在！");
+		});
+	
 	svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
 		std::cout << "收到请求，内容：" << req.body << std::endl;
 		res.set_header("Access-Control-Allow-Origin", "*");
 		std::string ret;
-		try
+		nlohmann::json j = nlohmann::json::parse(req.body);
+		if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
 		{
-			nlohmann::json j = nlohmann::json::parse(req.body);
-			if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
-			{
-				Message msg(j);
-				processor.ProcessMessage(msg.text, msg, ret);
-			}
-			res.set_content(ret, "text/plain");
+			Message msg(j);
+			data.AddData<std::string*>("current_ret_string", &ret);
+			processor.ProcessMessage(msg.text, msg, ret);
 		}
-		catch (std::exception e)
-		{
-			std::cout << e.what();
-		}
+		res.set_content(ret, "text/plain");
 		});
 	std::cout << "Server is running on http://localhost:8080" << std::endl;
 	svr.listen("localhost", 8080);
