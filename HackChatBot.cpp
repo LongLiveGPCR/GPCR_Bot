@@ -213,12 +213,7 @@ public:
 	}
 	void Put(uint8_t x, uint8_t y, const std::string& player)
 	{
-		if (player != *nextPlayerIter)
-		{
-			SendMsg(At(player, "你不在该房间或还没轮到你！"));
-			return;
-		}
-		if (player != *nextPlayerIter)
+		if (!Started() || player != *nextPlayerIter)
 		{
 			SendMsg(At(player, "你不在该房间或还没轮到你！"));
 			return;
@@ -362,21 +357,21 @@ int main()
 		else
 			ret = At(msg.mTrip, "你今天已经签过到了！");
 		});
-	processor.AddMatchProcessor(R"(设置权限\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(设置权限\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderPermission(255);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("permission", m.str(2));
 		ret = At(msg.mTrip, "已经把该用户的权限设为" + m.str(2) + "！");
 		});
-	processor.AddMatchProcessor(R"(设置金币\s*(.+?)\s*(\-?\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(设置金币\s*([^']{6})\s*(\-?\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("money", m.str(2));
 		ret = At(msg.mTrip, "已经把该用户的金币设为" + m.str(2) + "！");
 		});
-	processor.AddMatchProcessor(R"(转账\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(转账\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		const long long money = stoll(m.str(2));
@@ -420,7 +415,7 @@ int main()
 				u.mTrip, (long long)u.Select("money"), (uint8_t)u.Select("permission"), (unsigned long)u.Select("worker"), (unsigned long)u.Select("army"), (unsigned short)u.Select("productiontechnology"),
 				(unsigned short)u.Select("militarytechnology"), (unsigned short)u.Select("salary"), (uint8_t)u.Select("happiness"), User::GetTypeString((User::Type)(uint8_t)u.Select("type"))));
 		});
-	processor.AddMatchProcessor(R"(查询\s*(.+?))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(查询\s*([^']{6}))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
@@ -620,7 +615,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "金币不足！");
 		});
-	processor.AddMatchProcessor(R"(攻击\s*(.+?)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(攻击\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
 		CheckSenderValid;
 		User attacker(msg.mTrip);
 		User defender(m.str(1));
@@ -793,7 +788,6 @@ int main()
 				ret = At(msg.mTrip, "修改成功！您现在的政府类型：默认\n技能：无");
 				u.Update("lastchangedate", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
 				u.Update("type", User::NORMAL);
-				u.Update("recruitableworker", 200);//重置可招募工人
 			}
 			else if (m.str(1) == "资本主义")
 			{
@@ -806,7 +800,6 @@ int main()
 						"【科技发达】研究生产科技和军事科技的成本下降40%");
 					u.Update("lastchangedate", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
 					u.Update("type", User::CAPITALISM);
-					u.Update("recruitableworker", 400);//重置可招募工人
 				}
 				else
 					ret = At(msg.mTrip, "生产科技不满足要求！");
@@ -826,7 +819,6 @@ int main()
 						"【宁死不屈】防御失败时，工人只会减少，不会被对方掠夺");
 					u.Update("lastchangedate", std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()));
 					u.Update("type", User::SOCIALISM);
-					u.Update("recruitableworker", 200);//重置可招募工人
 				}
 				else
 					ret = At(msg.mTrip, "生产科技不满足要求！");
