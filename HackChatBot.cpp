@@ -2,12 +2,13 @@
 #include <string>
 #include<format>
 #include<unordered_set>
+#include<thread>
 #include<httplib.h>
 #include<json.hpp>
 #include<MessageProcessor.h> 
 #include<MySQLLibrary.h>
 #include<RuntimeData.h>
-
+#include<GameTree.h>
 using MyStd::MySQL::Date;
 using MyStd::MySQL::DateTime;
 using namespace std::chrono_literals;
@@ -52,14 +53,11 @@ public:
 		}
 	}
 };
-class Message
+struct Message
 {
-public:
 	std::string mTrip;
 	std::string mText;
-	Message(const nlohmann::json& j)
-		: mTrip(j["trip"].get_ref<const std::string&>()),
-		mText(j["text"].get_ref<const std::string&>()) {}
+	std::string mNick;
 };
 //答题
 struct Question
@@ -169,9 +167,10 @@ private:
 	}
 	std::string GetBoardString()const
 	{
-		std::string res = "\n";
+		std::string res = "  0 1 2 3 4 5 6 7 8 9 1011121314\n";
 		for (size_t i = 0; i < 15; ++i)
 		{
+			res += std::format("{:2}", i);
 			for (size_t j = 0; j < 15; ++j)
 			{
 				switch (board[i][j])
@@ -180,7 +179,7 @@ private:
 					res += "●";
 					break;
 				case WHITE:
-					res += "◯";
+					res += "○";
 					break;
 				default:
 					res += "十";
@@ -1042,6 +1041,93 @@ int main()
 		else
 			ret = At(msg.mTrip, "该数据不存在！");
 		});
+	processor.AddMatchProcessor(R"(开始AI五子棋)", [&](const std::smatch& m, const Message& msg) {
+		if (data.FindData("AIGobang_result"))//重开
+		{
+			data.RemoveData("AIGobang_result");
+			data.RemoveData("AIGobang");
+		}
+		if (data.FindData("AIGobang"))
+		{
+			ret = At(msg.mTrip, "对局已经开始！");
+			return;
+		}
+		data.AddData<GameTree>("AIGobang", 3);
+		ret = At(msg.mTrip, "游戏开始！请输入要下的坐标（提示：中心位置为7 7）");
+		});
+	processor.AddMatchProcessor(R"(AI五子棋\s*(\d+)\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
+		if (data.FindData("AIGobang_thinking"))
+		{
+			ret = At(msg.mTrip, "AI正在思考！");
+			return;
+		}
+		if (data.FindData("AIGobang_result"))
+		{
+			ret = At(msg.mTrip, "对局已经结束！");
+			return;
+		}
+		GameTree* gt = data.GetData<GameTree>("AIGobang");
+		if (gt == nullptr)
+		{
+			ret = At(msg.mTrip, "对局还没有开始！");
+			return;
+		}
+		uint8_t x = std::stoul(m.str(1)), y = std::stoul(m.str(2));
+		if (!gt->CanPutChess(x, y))
+		{
+			ret = At(msg.mTrip, "输入无效！");
+			return;
+		}
+		data.AddData<unsigned char>("AIGobang_thinking");//仅为标识，不使用内容
+		std::thread([&data, gt, x, y] {
+			gt->GetNextPos(x, y);
+			auto winner = gt->GetWinner();
+			if (winner == GameTree::Node::BLACK)
+			{
+				//1黑胜2白胜3平局
+				data.AddData<uint8_t>("AIGobang_result", 1);
+			}
+			else if (winner == GameTree::Node::WHITE)
+			{
+				data.AddData<uint8_t>("AIGobang_result", 2);
+			}
+			else if (gt->IsFull())
+			{
+				data.AddData<uint8_t>("AIGobang_result", 3);
+			}
+			data.RemoveData("AIGobang_thinking");
+			}).detach();
+		ret = At(msg.mTrip, "放置成功，AI正在思考，请耐心等待！");
+		});
+	processor.AddMatchProcessor("查看AI五子棋棋盘", [&](const std::smatch& m, const Message& msg) {
+		GameTree* gt = data.GetData<GameTree>("AIGobang");
+		if (gt == nullptr)
+		{
+			ret = At(msg.mTrip, "对局还没有开始！");
+			return;
+		}
+		if (data.FindData("AIGobang_thinking"))
+		{
+			ret = At(msg.mTrip, "AI正在思考！");
+			return;
+		}
+		ret = At(msg.mTrip, Code(gt->GetBoardString()));
+		if (uint8_t* res = data.GetData<uint8_t>("AIGobang_result"))
+		{
+			switch (*res)
+			{
+			case 1:
+				ret += "玩家胜利！";
+				break;
+			case 2:
+				ret += "AI胜利！";
+				break;
+			case 3:
+				ret += "平局！";
+				break;
+			}
+		}
+		});
 
 	svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
 		std::cout << "收到请求，内容：" << req.body << std::endl;
@@ -1050,15 +1136,25 @@ int main()
 		nlohmann::json j = nlohmann::json::parse(req.body);
 		if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
 		{
-			Message msg(j);
+			Message msg;
+			msg.mTrip = j["trip"].get_ref<const std::string&>();
+			msg.mText = j["text"].get_ref<const std::string&>();
+			msg.mNick = j["nick"].get_ref<const std::string&>();
 			processor.ProcessMessage(msg.mText, msg);
 		}
 		if (j["cmd"].get_ref<const std::string&>() == "info"
 			&& j["type"].get_ref<const std::string&>() == "whisper" && j.count("trip"))
 		{
-			Message msg(j);
-			msg.mText = msg.mText.substr(msg.mText.find_first_of(':') + 2);
-			processor.ProcessMessage(msg.mText, msg);
+			std::smatch m;
+			std::string text = j["text"].get_ref<const std::string&>();
+			if (std::regex_match(text, m, std::regex("(.+?) whispered: (.+)")))
+			{
+				Message msg;
+				msg.mNick = m.str(1);
+				msg.mText = m.str(2);
+				msg.mTrip = j["trip"].get_ref<const std::string&>();
+				processor.ProcessMessage(msg.mText, msg);
+			}
 		}
 		res.set_content(ret, "text/plain");
 		});
