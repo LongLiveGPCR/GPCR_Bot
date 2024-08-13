@@ -14,11 +14,11 @@ using namespace std::chrono_literals;
 MyStd::MySQL::DataBase db("root", "123456", "hcbot", "utf8mb4");
 std::string At(const std::string& nick, const std::string& text)
 {
-	return "@" + nick + " " + text;
+	return "@" + nick + " " + text + "\n";
 }
 std::string Code(const std::string& s)
 {
-	return "```\n" + s + "\n```";
+	return "\n```\n" + s + "\n```\n";
 }
 class User :public MyStd::MySQL::DBObject
 {
@@ -55,13 +55,11 @@ public:
 class Message
 {
 public:
-	std::string nick;
 	std::string mTrip;
-	std::string text;
+	std::string mText;
 	Message(const nlohmann::json& j)
-		:nick(j["nick"].get_ref<const std::string&>()),
-		mTrip(j["trip"].get_ref<const std::string&>()),
-		text(j["text"].get_ref<const std::string&>()) {}
+		: mTrip(j["trip"].get_ref<const std::string&>()),
+		mText(j["text"].get_ref<const std::string&>()) {}
 };
 //答题
 struct Question
@@ -191,7 +189,7 @@ private:
 			}
 			res += '\n';
 		}
-		return res;
+		return Code(res);
 	}
 protected:
 	virtual void OnStart() override
@@ -293,7 +291,7 @@ do\
 	}\
 	if ((uint8_t)sender.Select("permission") < (n))\
 	{\
-		ret = At(sender.mTrip, "你没有权限！");\
+		ret = At(sender.mTrip, std::format("你没有权限！需要的最低权限：{}",(n)));\
 		return;\
 	}\
 }while(false)
@@ -303,9 +301,10 @@ int main()
 	srand(time(nullptr));
 	std::system("chcp 65001");
 	httplib::Server svr; 
-	MyStd::MessageProcessor<const Message&, std::string&> processor;
+	MyStd::MessageProcessor<const Message&> processor;
+	std::string ret;
 	MyStd::RuntimeDataManager data;
-	processor.AddMatchProcessor("菜单", [&](const std::smatch&, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("菜单", [&](const std::smatch&, const Message& msg) {
 		static const std::string message = [&]() {
 			const auto& menu = processor.GetMatchProcessorsList();
 			std::string res = std::format("菜单（共{}个指令)：", menu.size());
@@ -318,7 +317,7 @@ int main()
 			}();
 		ret = Code(message);
 		});
-	processor.AddMatchProcessor("用户列表", [&](const std::smatch&, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("用户列表", [&](const std::smatch&, const Message& msg) {
 		auto res = db.Execute("select id from user")->GetRows();
 		std::string message = std::format("共有{}个已注册的用户：\n", res.size());
 		for (const auto& i : res)
@@ -328,7 +327,7 @@ int main()
 		}
 		ret = At(msg.mTrip, message);
 		});
-	processor.AddMatchProcessor("注册", [&](const std::smatch&, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("注册", [&](const std::smatch&, const Message& msg) {
 		User u(msg.mTrip);
 		if (u.IsValid())
 		{
@@ -338,7 +337,12 @@ int main()
 		u.Insert();
 		ret = At(msg.mTrip, "注册成功！");
 		});
-	processor.AddMatchProcessor("签到", [&](const std::smatch&, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("注销", [&](const std::smatch&, const Message& msg) {
+			CheckSenderValid;
+			User(msg.mTrip).Delete();
+			ret = At(msg.mTrip, "注销成功！");
+		});
+	processor.AddMatchProcessor("签到", [&](const std::smatch&, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 
@@ -350,28 +354,28 @@ int main()
 			ret = At(msg.mTrip, std::format("签到成功！奖励{}金币！", money));
 			if ((uint8_t)u.Select("type") == User::SOCIALISM)
 			{
-				ret = At(msg.mTrip, "技能【红色宣传】发动！奖励20幸福度！");
+				ret += At(msg.mTrip, "技能【红色宣传】发动！奖励20幸福度！");
 				u.Update("happiness", std::min((int)u.Select("happiness") + 20, 255));
 			}
 		}
 		else
 			ret = At(msg.mTrip, "你今天已经签过到了！");
 		});
-	processor.AddMatchProcessor(R"(设置权限\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(设置权限\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderPermission(255);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("permission", m.str(2));
 		ret = At(msg.mTrip, "已经把该用户的权限设为" + m.str(2) + "！");
 		});
-	processor.AddMatchProcessor(R"(设置金币\s*([^']{6})\s*(\-?\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(设置金币\s*([^']{6})\s*(\-?\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
 		u.Update("money", m.str(2));
 		ret = At(msg.mTrip, "已经把该用户的金币设为" + m.str(2) + "！");
 		});
-	processor.AddMatchProcessor(R"(转账\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(转账\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		const long long money = stoll(m.str(2));
@@ -386,7 +390,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "您的金币不足！");
 		});
-	processor.AddMatchProcessor(R"(梭哈\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(梭哈\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		long long money = stoll(m.str(1));
@@ -406,7 +410,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "您的金币不足！");
 		});
-	processor.AddMatchProcessor("查询", [&](const std::smatch&, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("查询", [&](const std::smatch&, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		ret = At(msg.mTrip,
@@ -415,7 +419,7 @@ int main()
 				u.mTrip, (long long)u.Select("money"), (uint8_t)u.Select("permission"), (unsigned long)u.Select("worker"), (unsigned long)u.Select("army"), (unsigned short)u.Select("productiontechnology"),
 				(unsigned short)u.Select("militarytechnology"), (unsigned short)u.Select("salary"), (uint8_t)u.Select("happiness"), User::GetTypeString((User::Type)(uint8_t)u.Select("type"))));
 		});
-	processor.AddMatchProcessor(R"(查询\s*([^']{6}))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(查询\s*([^']{6}))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderPermission(253);
 		User u(m.str(1));
 		CheckUserValid(u);
@@ -425,7 +429,7 @@ int main()
 				u.mTrip, (long long)u.Select("money"), (uint8_t)u.Select("permission"), (unsigned long)u.Select("worker"), (unsigned long)u.Select("army"), (unsigned short)u.Select("productiontechnology"),
 				(unsigned short)u.Select("militarytechnology"), (unsigned short)u.Select("salary"), (uint8_t)u.Select("happiness"), User::GetTypeString((User::Type)(uint8_t)u.Select("type"))));
 		});
-	processor.AddMatchProcessor(R"(执行SQL语句\s*(.+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(执行SQL语句\s*(.+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderPermission(255);
 		try
 		{
@@ -446,7 +450,7 @@ int main()
 					}
 					message += '\n';
 				}
-				ret = At(msg.mTrip, message);
+				ret = At(msg.mTrip, Code(message));
 			}
 			else
 			{
@@ -458,7 +462,7 @@ int main()
 			ret = At(msg.mTrip, std::string("执行失败，错误信息：") + ex.what());
 		}
 		});
-	processor.AddMatchProcessor(R"(招募工人\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(招募工人\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		long long money = (long long)u.Select("money");
@@ -494,7 +498,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "金币不足！");
 		});
-	processor.AddMatchProcessor("研究生产科技", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("研究生产科技", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		long long money = (long long)u.Select("money");
@@ -519,7 +523,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "金币不足！");
 		});
-	processor.AddMatchProcessor("生产", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("生产", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		const auto cd = ((User::Type)(uint8_t)u.Select("type") == User::CAPITALISM ? 10min : 15min);
@@ -549,7 +553,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "你没有工人！");
 		});
-	processor.AddMatchProcessor(R"(设置工资\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(设置工资\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		unsigned short newSalary = stoul(m.str(1)), technology = (unsigned short)u.Select("productiontechnology"),
@@ -566,7 +570,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "工资不能高于生产科技！");
 		});
-	processor.AddMatchProcessor(R"(招募军队\s*(\d+))",[&](const std::smatch& m, const Message& msg, std::string& ret){
+	processor.AddMatchProcessor(R"(招募军队\s*(\d+))",[&](const std::smatch& m, const Message& msg){
 		CheckSenderValid;
 		User u(msg.mTrip);
 		long long money = (long long)u.Select("money");
@@ -590,7 +594,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "金币不足！");
 		});
-	processor.AddMatchProcessor("研究军事科技", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("研究军事科技", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		long long money = (long long)u.Select("money");
@@ -615,7 +619,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "金币不足！");
 		});
-	processor.AddMatchProcessor(R"(攻击\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(攻击\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User attacker(msg.mTrip);
 		User defender(m.str(1));
@@ -773,7 +777,7 @@ int main()
 			defendArmy, technology2, happiness2, luck2, skill2, defendArmy, technology2, happiness2, luck2, skill2, point2, damage2)
 			+ "\n\n" + res1 + "\n\n" + res2);
 		});
-	processor.AddMatchProcessor(R"(改变政府类型\s*(.+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(改变政府类型\s*(.+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
 		User u(msg.mTrip);
 		if ((Date)u.Select("lastchangedate") != std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now()))
@@ -829,7 +833,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "一天只能修改一次政府类型！");
 		});
-	processor.AddMatchProcessor("随机句子", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("随机句子", [&](const std::smatch& m, const Message& msg) {
 		httplib::SSLClient cli("api.vvhan.com");
 		if (auto res = cli.Get("/api/ian/rand"))
 		{
@@ -843,7 +847,7 @@ int main()
 			ret = At(msg.mTrip, "获取随机句子失败！HTTP错误: " + httplib::to_string(res.error()));
 		}
 		});
-	processor.AddMatchProcessor("答题", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("答题", [&](const std::smatch& m, const Message& msg) {
 		Question* q = data.GetData<Question>(msg.mTrip + "_question");
 		if (q == nullptr)
 		{
@@ -879,7 +883,7 @@ int main()
 		}
 		ret = At(msg.mTrip, q->mQuestion);
 		});
-	processor.AddMatchProcessor(R"(选[a-dA-D])", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(选[a-dA-D])", [&](const std::smatch& m, const Message& msg) {
 		if (auto q = data.GetData<Question>(msg.mTrip + "_question"))
 		{
 			if (toupper(m.str(0).back()) == q->mAnswer)
@@ -896,7 +900,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "你还没有开始答题！");
 		});
-	processor.AddMatchProcessor("历史上的今天", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor("历史上的今天", [&](const std::smatch& m, const Message& msg) {
 		auto res = db.Execute("select * from httpcache where name='history' limit 1")->GetRows().front();
 		if (std::chrono::system_clock::now() == (Date)res[2])
 		{
@@ -933,7 +937,7 @@ int main()
 			}
 		}
 		});
-	processor.AddMatchProcessor(R"(天气\s*(.+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(天气\s*(.+))", [&](const std::smatch& m, const Message& msg) {
 		httplib::Client cl("v0.yiketianqi.com");
 		if (auto res = cl.Get("/api?unescape=1&version=v92&appid=43656176&appsecret=I42og6Lm&city=" + m.str(1)))
 		{
@@ -982,7 +986,7 @@ int main()
 			ret = At(msg.mTrip, "获取天气失败！HTTP错误: " + httplib::to_string(res.error()));
 		}
 		});
-	processor.AddMatchProcessor(R"(加入五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(加入五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) {
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
 			g->Join(msg.mTrip);
@@ -990,7 +994,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "该房间不存在！");
 		});
-	processor.AddMatchProcessor(R"(离开五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(离开五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) {
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
 			g->Leave(msg.mTrip);
@@ -998,13 +1002,13 @@ int main()
 		else
 			ret = At(msg.mTrip, "该房间不存在！");
 		});
-	processor.AddMatchProcessor(R"(创建五子棋房间\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(创建五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) {
 		const std::string id = m.str(1) + "_game";
 		if (data.GetData<MultiplayerGame>(id) == nullptr)
 		{
 			data.AddData<Gobang>(m.str(1) + "_game",
 				[&](const std::string& msg) {
-					*(*data.GetData<std::string*>("current_ret_string")) += msg + '\n';
+					ret += msg + '\n';
 				},
 				[&, id]() {
 					data.RemoveData(id);
@@ -1014,7 +1018,7 @@ int main()
 		else
 			ret = At(msg.mTrip, "该房间已存在！");
 		});
-	processor.AddMatchProcessor(R"(下\s*(\d+)\s*(\d+)\s*(\d+))", [&](const std::smatch& m, const Message& msg, std::string& ret) {
+	processor.AddMatchProcessor(R"(下\s*(.+?)\s*(\d+)\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
 			g->Put(stoul(m.str(2)), stoul(m.str(3)), msg.mTrip);
@@ -1022,17 +1026,39 @@ int main()
 		else
 			ret = At(msg.mTrip, "该房间不存在！");
 		});
-	
+	processor.AddMatchProcessor("运行时数据列表", [&](const std::smatch& m, const Message& msg) {
+		CheckSenderPermission(255);
+		ret = std::format("运行时数据（共{}个）：", data.data.size());
+		for (const auto& [key, value] : data.data)
+		{
+			ret += "\n" + key;
+		}
+		ret = Code(ret);
+		});
+	processor.AddMatchProcessor(R"(删除运行时数据\s*(.+))", [&](const std::smatch& m, const Message& msg) {
+		CheckSenderPermission(255);
+		if (data.RemoveData(m.str(1)))
+			ret = At(msg.mTrip, "已删除！");
+		else
+			ret = At(msg.mTrip, "该数据不存在！");
+		});
+
 	svr.Post("/", [&](const httplib::Request& req, httplib::Response& res) {
 		std::cout << "收到请求，内容：" << req.body << std::endl;
 		res.set_header("Access-Control-Allow-Origin", "*");
-		std::string ret;
+		ret.clear();
 		nlohmann::json j = nlohmann::json::parse(req.body);
 		if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
 		{
 			Message msg(j);
-			data.AddData<std::string*>("current_ret_string", &ret);
-			processor.ProcessMessage(msg.text, msg, ret);
+			processor.ProcessMessage(msg.mText, msg);
+		}
+		if (j["cmd"].get_ref<const std::string&>() == "info"
+			&& j["type"].get_ref<const std::string&>() == "whisper" && j.count("trip"))
+		{
+			Message msg(j);
+			msg.mText = msg.mText.substr(msg.mText.find_first_of(':') + 2);
+			processor.ProcessMessage(msg.mText, msg);
 		}
 		res.set_content(ret, "text/plain");
 		});
