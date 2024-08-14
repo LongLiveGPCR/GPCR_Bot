@@ -302,6 +302,7 @@ int main()
 	httplib::Server svr; 
 	MyStd::MessageProcessor<const Message&> processor;
 	std::string ret;
+	bool canWhisper = true;
 	MyStd::RuntimeDataManager data;
 	processor.AddMatchProcessor("菜单", [&](const std::smatch&, const Message& msg) {
 		static const std::string message = [&]() {
@@ -376,6 +377,7 @@ int main()
 		});
 	processor.AddMatchProcessor(R"(转账\s*([^']{6})\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		CheckSenderValid;
+		canWhisper = false;
 		User u(msg.mTrip);
 		const long long money = stoll(m.str(2));
 		if ((long long)u.Select("money") >= money)
@@ -651,6 +653,7 @@ int main()
 			return;
 		}
 
+		canWhisper = false;
 		//正式开始攻击
 		attacker.Update("lastattacktime", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
 		At(defender.mTrip, attacker.mTrip + "攻击了你！");
@@ -988,12 +991,13 @@ int main()
 	processor.AddMatchProcessor(R"(加入五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) {
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
+			canWhisper = false;
 			g->Join(msg.mTrip);
 		}
 		else
 			ret = At(msg.mTrip, "该房间不存在！");
 		});
-	processor.AddMatchProcessor(R"(离开五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) {
+	processor.AddMatchProcessor(R"(离开五子棋房间\s*(.+?)\s*)", [&](const std::smatch& m, const Message& msg) { 
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
 			g->Leave(msg.mTrip);
@@ -1005,6 +1009,7 @@ int main()
 		const std::string id = m.str(1) + "_game";
 		if (data.GetData<MultiplayerGame>(id) == nullptr)
 		{
+			canWhisper = false;
 			data.AddData<Gobang>(m.str(1) + "_game",
 				[&](const std::string& msg) {
 					ret += msg + '\n';
@@ -1020,6 +1025,7 @@ int main()
 	processor.AddMatchProcessor(R"(下\s*(.+?)\s*(\d+)\s*(\d+))", [&](const std::smatch& m, const Message& msg) {
 		if (Gobang* g = data.GetData<Gobang>(m.str(1) + "_game"))
 		{
+			canWhisper = false;
 			g->Put(stoul(m.str(2)), stoul(m.str(3)), msg.mTrip);
 		}
 		else
@@ -1134,6 +1140,7 @@ int main()
 		res.set_header("Access-Control-Allow-Origin", "*");
 		ret.clear();
 		nlohmann::json j = nlohmann::json::parse(req.body);
+		nlohmann::json reply;
 		if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
 		{
 			Message msg;
@@ -1141,6 +1148,8 @@ int main()
 			msg.mText = j["text"].get_ref<const std::string&>();
 			msg.mNick = j["nick"].get_ref<const std::string&>();
 			processor.ProcessMessage(msg.mText, msg);
+			reply["cmd"] = "chat";
+			reply["text"] = ret;
 		}
 		if (j["cmd"].get_ref<const std::string&>() == "info"
 			&& j["type"].get_ref<const std::string&>() == "whisper" && j.count("trip"))
@@ -1154,9 +1163,19 @@ int main()
 				msg.mText = m.str(2);
 				msg.mTrip = j["trip"].get_ref<const std::string&>();
 				processor.ProcessMessage(msg.mText, msg);
+				reply["cmd"] = "whisper";
+				reply["nick"] = msg.mNick;
+				reply["text"] = ret;
 			}
 		}
-		res.set_content(ret, "text/plain");
+		if (!canWhisper)
+		{
+			reply["cmd"] = "chat";
+		}
+		if (ret.empty())
+			res.set_content("", "text/plain");
+		else
+			res.set_content(reply.dump(), "text/plain");
 		});
 	std::cout << "Server is running on http://localhost:8080" << std::endl;
 	svr.listen("localhost", 8080);
