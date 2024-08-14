@@ -2,18 +2,22 @@
 
 var ws;
 function send(data) {
-    ws.send(JSON.stringify(data));
+    ws.send(data);
+    document.write('å‘é€äº†ï¼š');
+    document.write(data);
+    document.write('\n');
 }
 function Run() {
     ws = new WebSocket("wss://hack.chat/chat-ws")
     ws.onopen = function () {
-        document.write("³É¹¦Á¬½Óµ½·şÎñÆ÷£¡\n");
-        send({ cmd: 'join', nick: 'GPCR_Bot', password: 'GPCR1966Bot', channel: 'GPCR' });
+        document.write("æˆåŠŸè¿æ¥åˆ°æœåŠ¡å™¨ï¼\n");
+        send('{"cmd":"join","nick":"GPCR_Bot","password":"GPCR1966_Bot","channel":"GPCR"}');
     };  
     ws.onmessage = function (e) {
         const data = JSON.parse(e.data);
         document.write(e.data);
-        if (data.channel == false) { //¼ÓÈëÏŞÖÆ
+        document.write('\n');
+        if (data.channel == false) { //åŠ å…¥é™åˆ¶
             ws.close();
             return;
         }
@@ -22,20 +26,17 @@ function Run() {
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
                 if (request.status === 200) {
-                    var text = request.responseText;
-                    document.write(text);
-                    document.write('\n');
-                    if (text != "")
-                        send({ cmd: "chat", text: text });
+                    if (request.responseText != "")
+                        send(request.responseText);
                 }
             }
         };
         request.send(e.data);
     };
     ws.onclose = function (e) {
-        document.write("Óë·şÎñÆ÷¶Ï¿ªÁ¬½Ó£¡\n");
+        document.write("ä¸æœåŠ¡å™¨æ–­å¼€è¿æ¥ï¼\n");
         let timeId = setInterval(function () {
-            document.write("ÕıÔÚÖØÁ¬...\n");
+            document.write("æ­£åœ¨é‡è¿...\n");
             if (ws.readyState === WebSocket.CLOSED) {
                 Run();
                 clearInterval(timeId);
