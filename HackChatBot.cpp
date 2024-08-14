@@ -1139,6 +1139,7 @@ int main()
 		std::cout << "收到请求，内容：" << req.body << std::endl;
 		res.set_header("Access-Control-Allow-Origin", "*");
 		ret.clear();
+		canWhisper = true;
 		nlohmann::json j = nlohmann::json::parse(req.body);
 		nlohmann::json reply;
 		if (j["cmd"].get_ref<const std::string&>() == "chat" && j.count("trip"))
